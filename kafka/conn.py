@@ -776,18 +776,18 @@ class BrokerConnection(object):
         with self._lock:
             correlation_id = self._protocol.send_request(request)
 
-        log.debug('%s Request %d: %s', self, correlation_id, request)
-        if request.expect_response():
-            with self._ifr_lock:
-                if self.disconnected():
-                    log.debug("%s: Connection already closed.", self)
-                    future.failure(Errors.Cancelled(str(self)))
-                else:
-                    sent_time = time.time()
-                    assert correlation_id not in self.in_flight_requests, 'Correlation ID already in-flight!'
-                    self.in_flight_requests[correlation_id] = (future, sent_time)
-        else:
-            future.success(None)
+            log.debug('%s Request %d: %s', self, correlation_id, request)
+            if request.expect_response():
+                with self._ifr_lock:
+                    if self.disconnected():
+                        log.debug("%s: Connection already closed.", self)
+                        future.failure(Errors.Cancelled(str(self)))
+                    else:
+                        sent_time = time.time()
+                        assert correlation_id not in self.in_flight_requests, 'Correlation ID already in-flight!'
+                        self.in_flight_requests[correlation_id] = (future, sent_time)
+            else:
+                future.success(None)
 
         # Attempt to replicate behavior from prior to introduction of
         # send_pending_requests() / async sends
@@ -829,17 +829,20 @@ class BrokerConnection(object):
         Return list of (response, future) tuples
         """
         with self._ifr_lock:
-            if not self.connected() and not self.state is ConnectionStates.AUTHENTICATING:
-                log.warning('%s cannot recv: socket not connected', self)
-                # If requests are pending, we should close the socket and
-                # fail all the pending request futures
-                if self.in_flight_requests:
-                    self.close(Errors.KafkaConnectionError('Socket not connected during recv with in-flight-requests'))
-                return ()
+            state_ok = self.connected() or self.state is ConnectionStates.AUTHENTICATING
+            has_ifr = bool(self.in_flight_requests)
 
-            elif not self.in_flight_requests:
-                log.warning('%s: No in-flight-requests to recv', self)
-                return ()
+        if not state_ok:
+            log.warning('%s cannot recv: socket not connected', self)
+            # If requests are pending, we should close the socket and
+            # fail all the pending request futures
+            if has_ifr:
+                self.close(Errors.KafkaConnectionError('Socket not connected during recv with in-flight-requests'))
+            return ()
+
+        elif not has_ifr:
+            log.warning('%s: No in-flight-requests to recv', self)
+            return ()
 
         responses = self._recv()
         if not responses and self.requests_timed_out():
